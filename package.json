@@ -1,0 +1,17 @@
+{
+  "name": "drongallery-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Watermark worker for the Drone Gallery site. Runs in GitHub Actions.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node worker.mjs"
+  },
+  "dependencies": {
+    "sharp": "^0.35.5"
+  }
+}

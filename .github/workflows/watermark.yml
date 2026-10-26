@@ -1,0 +1,32 @@
+name: watermark
+
+# Started by the gallery site (workflow_dispatch) whenever watermark jobs are queued. It drains the whole queue and exits.
+on:
+  workflow_dispatch:
+
+# One run at a time; a dispatch that arrives during a run waits, so jobs queued meanwhile are never missed.
+concurrency:
+  group: watermark
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install ffmpeg and exiftool
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg libimage-exiftool-perl
+      - run: npm ci --omit=dev
+      - name: Process the queue
+        run: node worker.mjs
+        env:
+          GALLERY_SITE_URL: ${{ secrets.GALLERY_SITE_URL }}
+          WORKER_HMAC_SECRET: ${{ secrets.WORKER_HMAC_SECRET }}
