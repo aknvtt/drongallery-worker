@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import sharp from "sharp";
-import { measureVideoQuality, renderVideo } from "./worker.mjs";
+import { measureVideoQuality, renderPreview, renderVideo } from "./worker.mjs";
 
 const run = promisify(execFile);
 const dir = mkdtempSync(join(tmpdir(), "selftest-"));
@@ -95,6 +95,23 @@ if (!quality || quality.psnr == null || quality.ssim == null) problems.push("qua
 else {
   if (quality.psnr < 40) problems.push(`PSNR ${quality.psnr} dB is below 40`);
   if (quality.ssim < 0.98) problems.push(`SSIM ${quality.ssim} is below 0.98`);
+}
+
+// The web preview of the same clip: 4K landscape in, 1280x720 H.264/AAC out, much smaller, streamable (moov first).
+{
+  const previewFile = join(dir, "preview.mp4");
+  await renderPreview({ src, out: previewFile });
+  const p = await probe(previewFile);
+  const { stdout: audio } = await run("ffprobe", ["-v", "error", "-select_streams", "a", "-show_entries", "stream=codec_name", "-of", "csv=p=0", previewFile]);
+  const head = (await import("node:fs")).readFileSync(previewFile).subarray(0, 64 * 1024);
+  const moovFirst = head.indexOf("moov") !== -1 && (head.indexOf("mdat") === -1 || head.indexOf("moov") < head.indexOf("mdat"));
+  const ratio = statSync(previewFile).size / statSync(src).size;
+  console.log(`PREVIEW ${p.width}x${p.height} ${p.pix_fmt} ${p.profile} audio=${audio.trim()} size=${(statSync(previewFile).size / 1e6).toFixed(1)}MB (${(ratio * 100).toFixed(0)}% of source) faststart=${moovFirst}`);
+  if (p.width !== 1280 || p.height !== 720) problems.push(`preview is ${p.width}x${p.height}, expected 1280x720`);
+  if (p.pix_fmt !== "yuv420p") problems.push(`preview pixel format ${p.pix_fmt}`);
+  if (audio.trim() !== "aac") problems.push("preview has no AAC audio");
+  if (!moovFirst) problems.push("preview is not faststart");
+  if (ratio > 0.2) problems.push("preview is not much smaller than the source");
 }
 if (problems.length) {
   console.error("SELFTEST FAILED:", problems.join("; "));

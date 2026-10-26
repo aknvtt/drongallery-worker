@@ -1,5 +1,9 @@
 // Watermark worker. Runs inside GitHub Actions (see .github/workflows/watermark.yml).
 //
+// It handles two kinds of job: "watermark" (the logo copy of a photo/video) and "preview" (a light 720p web copy of a
+// video that the gallery plays in its own player; rendered from whatever file visitors are allowed to see, so it already
+// carries the logo when there is one).
+//
 // It asks the gallery site for jobs one at a time over HMAC-signed requests, downloads the original from Google Drive
 // with a short-lived token the site hands out per job, renders the watermarked copy, verifies that no GPS data survived,
 // uploads the copy back to Drive and reports the new file id. Nothing in this repository is secret: the site URL and the
@@ -23,6 +27,9 @@ const run = promisify(execFile);
 const SITE = (process.env.GALLERY_SITE_URL ?? "").replace(/\/$/, "");
 const SECRET = process.env.WORKER_HMAC_SECRET ?? "";
 
+const PREVIEW_SHORT_SIDE = 720; // the web preview is scaled so its shorter side is at most this
+const PREVIEW_CRF = 24;
+const PREVIEW_MAX_RATE = "4M"; // keeps a long clip streamable on a phone connection
 const DEFAULT_CRF = 18; // x264 quality: lower is closer to the source (and bigger). WORKER_CRF overrides it for experiments.
 const CHUNK = 8 * 1024 * 1024; // multiple of 256 KiB, as Drive requires
 const mask = (value) => value && console.log(`::add-mask::${value}`);
@@ -227,6 +234,35 @@ export async function renderVideo({ src, logoPath, out, settings, dir }) {
 }
 
 /**
+ * Light web copy of a video: shorter side at most 720 px, H.264 at a capped bitrate, AAC audio, 8-bit 4:2:0, moov atom
+ * up front so playback starts before the whole file is downloaded. Same safety as the watermark render: only the picture
+ * and audio are mapped (no telemetry/GPS track) and container metadata is cleared.
+ */
+export async function renderPreview({ src, out }) {
+  const { stream } = await probeVideo(src);
+  const s = PREVIEW_SHORT_SIDE;
+  // ffmpeg auto-rotates before the filters, so iw/ih are the displayed dimensions. Never upscale; -2 keeps the other side even.
+  const scale = `scale=w='if(gt(iw,ih),-2,min(${s},iw))':h='if(gt(iw,ih),min(${s},ih),-2)'`;
+  await run(
+    "ffmpeg",
+    [
+      "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+      "-i", src,
+      "-map", "0:v:0", "-map", "0:a:0?",
+      "-vf", `${scale},format=yuv420p`,
+      "-c:v", "libx264", "-preset", "veryfast", "-profile:v", "high", "-crf", String(PREVIEW_CRF),
+      "-maxrate", PREVIEW_MAX_RATE, "-bufsize", "8M",
+      ...colorArgs(stream),
+      "-c:a", "aac", "-b:a", "128k", "-ac", "2",
+      "-map_metadata", "-1", "-map_chapters", "-1",
+      "-movflags", "+faststart",
+      out,
+    ],
+    { maxBuffer: 10 * 1024 * 1024, timeout: 100 * 60_000, killSignal: "SIGKILL" },
+  );
+}
+
+/**
  * Compares the result with the original over a short sample, ignoring the logo area. Best effort: a failure here never
  * fails the job.
  */
@@ -256,6 +292,7 @@ async function stripAndVerify(file) {
 // --- one job ----------------------------------------------------------------------------------------------------
 
 async function handle(job) {
+  const preview = job.task === "preview";
   mask(job.id);
   mask(job.source.fileId);
   mask(job.logoFileId);
@@ -274,12 +311,14 @@ async function handle(job) {
     const src = join(dir, `source${ext}`);
     const logoPath = join(dir, "logo.png");
     await driveDownload(accessToken, job.source.fileId, src, job.source.size);
-    await driveDownload(accessToken, job.logoFileId, logoPath);
+    if (!preview) await driveDownload(accessToken, job.logoFileId, logoPath);
 
     const out = join(dir, job.kind === "video" ? "out.mp4" : "out.jpg");
     let quality = null;
     try {
-      if (job.kind === "video") {
+      if (preview) {
+        await renderPreview({ src, out });
+      } else if (job.kind === "video") {
         const done = await renderVideo({ src, logoPath, out, settings: job.settings, dir });
         quality = await measureVideoQuality({ src, out, rect: done.rect, duration: done.duration });
       } else await renderPhoto({ src, logoPath, out, settings: job.settings });
@@ -293,7 +332,7 @@ async function handle(job) {
     const stem = basename(job.source.name, extname(job.source.name)).replace(/[^\w.-]+/g, "_").slice(0, 100) || "item";
     const wmFileId = await driveUpload(accessToken, {
       path: out,
-      name: `${stem}-wm${job.kind === "video" ? ".mp4" : ".jpg"}`,
+      name: `${stem}-${preview ? "preview" : "wm"}${job.kind === "video" ? ".mp4" : ".jpg"}`,
       mimeType: job.kind === "video" ? "video/mp4" : "image/jpeg",
       parentId: job.outputFolderId,
     });
@@ -305,10 +344,10 @@ async function handle(job) {
       seconds,
       ...(quality?.psnr != null && quality?.ssim != null ? { psnr: quality.psnr, ssim: quality.ssim } : {}),
     });
-    console.log(`job ok kind=${job.kind} in=${(job.source.size / 1e6).toFixed(1)}MB out=${(statSync(out).size / 1e6).toFixed(1)}MB seconds=${seconds}${quality?.psnr != null ? ` psnr=${quality.psnr.toFixed(1)}dB ssim=${quality.ssim}` : ""}`);
+    console.log(`job ok task=${preview ? "preview" : "watermark"} kind=${job.kind} in=${(job.source.size / 1e6).toFixed(1)}MB out=${(statSync(out).size / 1e6).toFixed(1)}MB seconds=${seconds}${quality?.psnr != null ? ` psnr=${quality.psnr.toFixed(1)}dB ssim=${quality.ssim}` : ""}`);
   } catch (err) {
     const code = err instanceof JobError ? err.code : "process-failed";
-    console.log(`job failed kind=${job.kind} code=${code}`);
+    console.log(`job failed task=${preview ? "preview" : "watermark"} kind=${job.kind} code=${code}`);
     await site("/api/worker/complete", { ok: false, jobId: job.id, seconds: Math.round((Date.now() - started) / 1000), code: ["download-failed", "too-large", "process-failed", "upload-failed", "gps-leak", "no-logo", "timeout"].includes(code) ? code : "process-failed" }).catch(() => undefined);
   } finally {
     rmSync(dir, { recursive: true, force: true });
