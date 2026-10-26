@@ -1,0 +1,24 @@
+name: selftest
+
+# Renders a synthetic 4K clip with the real worker code and checks resolution, frame count, colour tags and quality.
+# Does not use any secret and never talks to the gallery site or to Drive.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  video:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install ffmpeg and exiftool
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg libimage-exiftool-perl
+      - run: npm ci --omit=dev
+      - run: node selftest.mjs
