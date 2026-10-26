@@ -4,12 +4,18 @@ name: selftest
 # Does not use any secret and never talks to the gallery site or to Drive.
 on:
   workflow_dispatch:
+    inputs:
+      sweep:
+        description: "Compare several x264 CRF values on clips with different noise (informational, never fails)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   video:
+    if: ${{ !inputs.sweep }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -22,3 +28,27 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg libimage-exiftool-perl
       - run: npm ci --omit=dev
       - run: node selftest.mjs
+
+  sweep:
+    if: ${{ inputs.sweep }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        noise: [3, 10]
+        crf: [18, 15, 12]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install ffmpeg and exiftool
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg libimage-exiftool-perl
+      - run: npm ci --omit=dev
+      - run: node selftest.mjs
+        env:
+          SELFTEST_SOFT: "1"
+          SELFTEST_NOISE: ${{ matrix.noise }}
+          WORKER_CRF: ${{ matrix.crf }}

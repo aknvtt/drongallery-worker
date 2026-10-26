@@ -23,6 +23,7 @@ const run = promisify(execFile);
 const SITE = (process.env.GALLERY_SITE_URL ?? "").replace(/\/$/, "");
 const SECRET = process.env.WORKER_HMAC_SECRET ?? "";
 
+const DEFAULT_CRF = 18; // x264 quality: lower is closer to the source (and bigger). WORKER_CRF overrides it for experiments.
 const CHUNK = 8 * 1024 * 1024; // multiple of 256 KiB, as Drive requires
 const mask = (value) => value && console.log(`::add-mask::${value}`);
 
@@ -198,6 +199,7 @@ export async function renderVideo({ src, logoPath, out, settings, dir }) {
   const overlay = join(dir, "overlay.png");
   await sharp(logo.data, { raw: { width: logo.info.width, height: logo.info.height, channels: 4 } }).png().toFile(overlay);
   const pixFmt = outputPixFmt(stream.pix_fmt);
+  const crf = String(Math.min(28, Math.max(8, Number(process.env.WORKER_CRF) || DEFAULT_CRF)));
 
   await run(
     "ffmpeg",
@@ -208,7 +210,7 @@ export async function renderVideo({ src, logoPath, out, settings, dir }) {
       "-filter_complex", `[0:v][1:v]overlay=${rect.x}:${rect.y}:format=auto,format=${pixFmt}[v]`,
       "-map", "[v]", "-map", "0:a?",
       "-fps_mode", "passthrough", // never duplicate or drop frames
-      "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-profile:v", "high", "-pix_fmt", pixFmt,
+      "-c:v", "libx264", "-crf", crf, "-preset", "medium", "-profile:v", "high", "-pix_fmt", pixFmt,
       ...colorArgs(stream),
       "-c:a", "copy",
       // Only the picture and audio streams are mapped, so the drone's telemetry/GPS data track is dropped; also clear

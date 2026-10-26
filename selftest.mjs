@@ -18,7 +18,7 @@ const logoPath = join(dir, "logo.png");
 // A 10 s 4K30 clip with noise (hard to compress, like real footage) at 100 Mbit/s, tagged like a DJI recording.
 await run("ffmpeg", [
   "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-  "-f", "lavfi", "-i", "testsrc2=size=3840x2160:rate=30,noise=alls=10:allf=t+u",
+  "-f", "lavfi", "-i", `testsrc2=size=3840x2160:rate=30,noise=alls=${process.env.SELFTEST_NOISE ?? 10}:allf=t+u`,
   "-f", "lavfi", "-i", "sine=frequency=440:duration=10",
   "-t", "10",
   "-c:v", "libx264", "-b:v", "100M", "-maxrate", "100M", "-bufsize", "200M", "-pix_fmt", "yuv420p",
@@ -54,6 +54,8 @@ console.log(JSON.stringify({
   mismatches,
 }, null, 2));
 
+console.log(`SWEEP crf=${process.env.WORKER_CRF ?? "default"} noise=${process.env.SELFTEST_NOISE ?? 10} src=${mbps(a)}Mbps out=${mbps(b)}Mbps (${((Number(b.bit_rate) / Number(a.bit_rate) - 1) * 100).toFixed(0)}%) psnr=${quality?.psnr?.toFixed(1)}dB ssim=${quality?.ssim?.toFixed(4)} render=${renderSeconds}s`);
+if (process.env.SELFTEST_SOFT) process.exit(0);
 const problems = [];
 if (mismatches.length) problems.push(`stream properties differ: ${mismatches.join(", ")}`);
 if (!quality || quality.psnr == null || quality.ssim == null) problems.push("quality could not be measured");
