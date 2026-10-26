@@ -36,16 +36,16 @@ export function parseQuality(log) {
 
 /**
  * ffmpeg arguments that compare the original with the watermarked file over a short sample, with the logo area blacked
- * out on both sides so only the picture that should be untouched is measured.
+ * out on both sides so only the picture that should be untouched is measured. One metric per run ("ssim" or "psnr"):
+ * a single graph feeding two null outputs can stall ffmpeg.
  */
-export function qualityArgs({ src, out, rect, start, seconds }) {
+export function qualityArgs({ src, out, rect, start, seconds, metric }) {
   const box = `drawbox=x=${Math.max(0, rect.x - 4)}:y=${Math.max(0, rect.y - 4)}:w=${rect.w + 8}:h=${rect.h + 8}:color=black:t=fill`;
   return [
     "-nostdin", "-hide_banner", "-loglevel", "info",
     "-ss", String(start), "-t", String(seconds), "-i", src,
     "-ss", String(start), "-t", String(seconds), "-i", out,
-    "-lavfi", `[0:v]${box}[a];[1:v]${box}[b];[a]split[a1][a2];[b]split[b1][b2];[a1][b1]ssim[s];[a2][b2]psnr[p]`,
-    "-map", "[s]", "-f", "null", "-",
-    "-map", "[p]", "-f", "null", "-",
+    "-lavfi", `[0:v]${box}[a];[1:v]${box}[b];[a][b]${metric}`,
+    "-f", "null", "-",
   ];
 }

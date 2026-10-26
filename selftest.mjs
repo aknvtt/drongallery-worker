@@ -57,13 +57,15 @@ console.log(JSON.stringify({
 if (process.env.SELFTEST_DIAG) {
   const psnrOf = async (label, graph) => {
     try {
-      const { stderr } = await run("ffmpeg", ["-nostdin", "-hide_banner", "-loglevel", "info", "-i", src, "-i", out, "-lavfi", graph, "-f", "null", "-"], { maxBuffer: 20 * 1024 * 1024 });
+      const { stderr } = await run("ffmpeg", ["-nostdin", "-hide_banner", "-loglevel", "info", "-i", src, "-i", out, "-lavfi", graph, "-f", "null", "-"], { maxBuffer: 20 * 1024 * 1024, timeout: 120_000, killSignal: "SIGKILL" });
       console.log("DIAG", label, (/average:([0-9.]+|inf)/.exec(stderr) ?? [])[1], (/PSNR.*/.exec(stderr) ?? [""])[0].slice(0, 120));
     } catch (e) { console.log("DIAG", label, "error", String(e.stderr ?? e.message).slice(-300)); }
   };
   await psnrOf("full frame, as is", "[0:v][1:v]psnr");
   await psnrOf("crop 400x400 top-left (far from logo)", "[0:v]crop=400:400:100:100[a];[1:v]crop=400:400:100:100[b];[a][b]psnr");
   await psnrOf("first 30 frames only", "[0:v]select='lt(n,30)'[a];[1:v]select='lt(n,30)'[b];[a][b]psnr");
+  await psnrOf("output delayed by one frame", "[0:v]setpts=PTS-STARTPTS[a];[1:v]setpts=PTS-STARTPTS+1/30/TB[b];[a][b]psnr");
+  await psnrOf("source delayed by one frame", "[0:v]setpts=PTS-STARTPTS+1/30/TB[a];[1:v]setpts=PTS-STARTPTS[b];[a][b]psnr");
   await psnrOf("setpts aligned", "[0:v]setpts=PTS-STARTPTS[a];[1:v]setpts=PTS-STARTPTS[b];[a][b]psnr");
   const { stdout: st } = await run("ffprobe", ["-v", "error", "-show_entries", "stream=codec_type,start_time,duration,nb_frames", "-of", "csv=p=0", src]);
   const { stdout: ot } = await run("ffprobe", ["-v", "error", "-show_entries", "stream=codec_type,start_time,duration,nb_frames", "-of", "csv=p=0", out]);
@@ -77,8 +79,8 @@ if (process.env.SELFTEST_DIAG) {
   for (const [label, args] of Object.entries(variants)) {
     const file = join(dir, "v.mp4");
     try {
-      await run("ffmpeg", ["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-t", "3", ...args, file]);
-      const { stderr } = await run("ffmpeg", ["-nostdin", "-hide_banner", "-loglevel", "info", "-t", "3", "-i", src, "-i", file, "-lavfi", "[0:v]crop=400:400:600:600[a];[1:v]crop=400:400:600:600[b];[a][b]psnr", "-f", "null", "-"], { maxBuffer: 20 * 1024 * 1024 });
+      await run("ffmpeg", ["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-t", "3", ...args, file], { timeout: 120_000, killSignal: "SIGKILL" });
+      const { stderr } = await run("ffmpeg", ["-nostdin", "-hide_banner", "-loglevel", "info", "-t", "3", "-i", src, "-i", file, "-lavfi", "[0:v]crop=400:400:600:600[a];[1:v]crop=400:400:600:600[b];[a][b]psnr", "-f", "null", "-"], { maxBuffer: 20 * 1024 * 1024, timeout: 120_000, killSignal: "SIGKILL" });
       console.log("DIAG variant", label, "psnr", (/average:([0-9.]+|inf)/.exec(stderr) ?? [])[1]);
     } catch (e) { console.log("DIAG variant", label, "error", String(e.stderr ?? e.message).slice(-200)); }
   }

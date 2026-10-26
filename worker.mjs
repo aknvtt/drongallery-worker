@@ -219,7 +219,7 @@ export async function renderVideo({ src, logoPath, out, settings, dir }) {
       "-movflags", "+faststart",
       out,
     ],
-    { maxBuffer: 10 * 1024 * 1024, timeout: 100 * 60_000 },
+    { maxBuffer: 10 * 1024 * 1024, timeout: 100 * 60_000, killSignal: "SIGKILL" },
   );
   return { rect, duration };
 }
@@ -232,8 +232,12 @@ export async function measureVideoQuality({ src, out, rect, duration }) {
   try {
     const seconds = Math.min(12, Math.max(2, Math.floor(duration || 12)));
     const start = duration > seconds * 3 ? Math.floor(duration / 3) : 0;
-    const { stderr } = await run("ffmpeg", qualityArgs({ src, out, rect, start, seconds }), { maxBuffer: 20 * 1024 * 1024, timeout: 10 * 60_000 });
-    return parseQuality(stderr);
+    let log = "";
+    for (const metric of ["ssim", "psnr"]) {
+      const { stderr } = await run("ffmpeg", qualityArgs({ src, out, rect, start, seconds, metric }), { maxBuffer: 20 * 1024 * 1024, timeout: 10 * 60_000, killSignal: "SIGKILL" });
+      log += stderr;
+    }
+    return parseQuality(log);
   } catch {
     return null;
   }
