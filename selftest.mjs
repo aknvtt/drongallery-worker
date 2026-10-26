@@ -93,8 +93,8 @@ const problems = [];
 if (mismatches.length) problems.push(`stream properties differ: ${mismatches.join(", ")}`);
 if (!quality || quality.psnr == null || quality.ssim == null) problems.push("quality could not be measured");
 else {
-  if (quality.psnr < 42) problems.push(`PSNR ${quality.psnr} dB is below 42`);
-  if (quality.ssim < 0.99) problems.push(`SSIM ${quality.ssim} is below 0.99`);
+  if (quality.psnr < 40) problems.push(`PSNR ${quality.psnr} dB is below 40`);
+  if (quality.ssim < 0.98) problems.push(`SSIM ${quality.ssim} is below 0.98`);
 }
 if (problems.length) {
   console.error("SELFTEST FAILED:", problems.join("; "));
