@@ -54,6 +54,22 @@ console.log(JSON.stringify({
   mismatches,
 }, null, 2));
 
+if (process.env.SELFTEST_DIAG) {
+  const psnrOf = async (label, graph) => {
+    try {
+      const { stderr } = await run("ffmpeg", ["-nostdin", "-hide_banner", "-loglevel", "info", "-i", src, "-i", out, "-lavfi", graph, "-f", "null", "-"], { maxBuffer: 20 * 1024 * 1024 });
+      console.log("DIAG", label, (/average:([0-9.]+|inf)/.exec(stderr) ?? [])[1], (/PSNR.*/.exec(stderr) ?? [""])[0].slice(0, 120));
+    } catch (e) { console.log("DIAG", label, "error", String(e.stderr ?? e.message).slice(-300)); }
+  };
+  await psnrOf("full frame, as is", "[0:v][1:v]psnr");
+  await psnrOf("crop 400x400 top-left (far from logo)", "[0:v]crop=400:400:100:100[a];[1:v]crop=400:400:100:100[b];[a][b]psnr");
+  await psnrOf("first 30 frames only", "[0:v]select='lt(n,30)'[a];[1:v]select='lt(n,30)'[b];[a][b]psnr");
+  await psnrOf("setpts aligned", "[0:v]setpts=PTS-STARTPTS[a];[1:v]setpts=PTS-STARTPTS[b];[a][b]psnr");
+  const { stdout: st } = await run("ffprobe", ["-v", "error", "-show_entries", "stream=codec_type,start_time,duration,nb_frames", "-of", "csv=p=0", src]);
+  const { stdout: ot } = await run("ffprobe", ["-v", "error", "-show_entries", "stream=codec_type,start_time,duration,nb_frames", "-of", "csv=p=0", out]);
+  const nl = String.fromCharCode(10);
+  console.log("DIAG timing src:", st.trim().split(nl).join(" | "), "out:", ot.trim().split(nl).join(" | "));
+}
 console.log(`SWEEP crf=${process.env.WORKER_CRF ?? "default"} noise=${process.env.SELFTEST_NOISE ?? 10} src=${mbps(a)}Mbps out=${mbps(b)}Mbps (${((Number(b.bit_rate) / Number(a.bit_rate) - 1) * 100).toFixed(0)}%) psnr=${quality?.psnr?.toFixed(1)}dB ssim=${quality?.ssim?.toFixed(4)} render=${renderSeconds}s`);
 if (process.env.SELFTEST_SOFT) process.exit(0);
 const problems = [];
