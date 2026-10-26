@@ -67,6 +67,21 @@ if (process.env.SELFTEST_DIAG) {
   await psnrOf("setpts aligned", "[0:v]setpts=PTS-STARTPTS[a];[1:v]setpts=PTS-STARTPTS[b];[a][b]psnr");
   const { stdout: st } = await run("ffprobe", ["-v", "error", "-show_entries", "stream=codec_type,start_time,duration,nb_frames", "-of", "csv=p=0", src]);
   const { stdout: ot } = await run("ffprobe", ["-v", "error", "-show_entries", "stream=codec_type,start_time,duration,nb_frames", "-of", "csv=p=0", out]);
+  // Where does the difference come from? Re-encode the same source three ways and compare each with the original.
+  const variants = {
+    "A plain re-encode, no filters": ["-i", src, "-c:v", "libx264", "-crf", "12", "-preset", "veryfast", "-pix_fmt", "yuv420p"],
+    "B overlay without format options": ["-i", src, "-i", join(dir, "overlay.png"), "-filter_complex", "[0:v][1:v]overlay=10:10[v]", "-map", "[v]", "-c:v", "libx264", "-crf", "12", "-preset", "veryfast"],
+    "C worker chain (format=auto, yuv420p)": ["-i", src, "-i", join(dir, "overlay.png"), "-filter_complex", "[0:v][1:v]overlay=10:10:format=auto,format=yuv420p[v]", "-map", "[v]", "-c:v", "libx264", "-crf", "12", "-preset", "veryfast", "-pix_fmt", "yuv420p"],
+    "D worker chain + colour tags": ["-i", src, "-i", join(dir, "overlay.png"), "-filter_complex", "[0:v][1:v]overlay=10:10:format=auto,format=yuv420p[v]", "-map", "[v]", "-c:v", "libx264", "-crf", "12", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"],
+  };
+  for (const [label, args] of Object.entries(variants)) {
+    const file = join(dir, "v.mp4");
+    try {
+      await run("ffmpeg", ["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-t", "3", ...args, file]);
+      const { stderr } = await run("ffmpeg", ["-nostdin", "-hide_banner", "-loglevel", "info", "-t", "3", "-i", src, "-i", file, "-lavfi", "[0:v]crop=400:400:600:600[a];[1:v]crop=400:400:600:600[b];[a][b]psnr", "-f", "null", "-"], { maxBuffer: 20 * 1024 * 1024 });
+      console.log("DIAG variant", label, "psnr", (/average:([0-9.]+|inf)/.exec(stderr) ?? [])[1]);
+    } catch (e) { console.log("DIAG variant", label, "error", String(e.stderr ?? e.message).slice(-200)); }
+  }
   const nl = String.fromCharCode(10);
   console.log("DIAG timing src:", st.trim().split(nl).join(" | "), "out:", ot.trim().split(nl).join(" | "));
 }
