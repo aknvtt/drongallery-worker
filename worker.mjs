@@ -17,6 +17,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import sharp from "sharp";
 import { computeOverlayRect } from "./overlay-math.mjs";
+import { colorArgs, outputPixFmt, parseQuality, qualityArgs } from "./quality.mjs";
 
 const run = promisify(execFile);
 const SITE = (process.env.GALLERY_SITE_URL ?? "").replace(/\/$/, "");
@@ -172,24 +173,31 @@ async function probeVideo(src) {
   const { stdout } = await run("ffprobe", [
     "-v", "error",
     "-select_streams", "v:0",
-    "-show_entries", "stream=width,height:stream_side_data=rotation:stream_tags=rotate",
+    "-show_entries", "stream=width,height,pix_fmt,color_range,color_space,color_transfer,color_primaries,duration:stream_side_data=rotation:stream_tags=rotate:format=duration",
     "-of", "json",
     src,
   ]);
-  const stream = JSON.parse(stdout).streams?.[0];
+  const json = JSON.parse(stdout);
+  const stream = json.streams?.[0];
   if (!stream?.width || !stream?.height) throw new JobError("process-failed");
   const rotation = Math.abs(Number(stream.side_data_list?.[0]?.rotation ?? stream.tags?.rotate ?? 0)) % 180;
   // ffmpeg auto-rotates, so the overlay must be placed on the rotated frame.
-  return rotation === 90 ? { width: stream.height, height: stream.width } : { width: stream.width, height: stream.height };
+  const size = rotation === 90 ? { width: stream.height, height: stream.width } : { width: stream.width, height: stream.height };
+  return { ...size, stream, duration: Number(stream.duration ?? json.format?.duration ?? 0) };
 }
 
-async function renderVideo({ src, logoPath, out, settings, dir }) {
-  const { width, height } = await probeVideo(src);
+/**
+ * Re-encodes the video with the logo on top. The picture keeps its resolution, frame timing, pixel format and colour
+ * description; only the codec pass is lossy (x264 at CRF 18, which is visually transparent). Audio is copied bit-exact.
+ */
+export async function renderVideo({ src, logoPath, out, settings, dir }) {
+  const { width, height, stream, duration } = await probeVideo(src);
   const logoMeta = await sharp(logoPath).metadata();
   const rect = computeOverlayRect(width, height, logoMeta.width / logoMeta.height, settings);
   const logo = await prepareLogo(logoPath, rect, settings.opacity);
   const overlay = join(dir, "overlay.png");
   await sharp(logo.data, { raw: { width: logo.info.width, height: logo.info.height, channels: 4 } }).png().toFile(overlay);
+  const pixFmt = outputPixFmt(stream.pix_fmt);
 
   await run(
     "ffmpeg",
@@ -197,9 +205,11 @@ async function renderVideo({ src, logoPath, out, settings, dir }) {
       "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
       "-i", src,
       "-i", overlay,
-      "-filter_complex", `[0:v][1:v]overlay=${rect.x}:${rect.y}:format=auto,format=yuv420p[v]`,
+      "-filter_complex", `[0:v][1:v]overlay=${rect.x}:${rect.y}:format=auto,format=${pixFmt}[v]`,
       "-map", "[v]", "-map", "0:a?",
-      "-c:v", "libx264", "-crf", "18", "-preset", "medium",
+      "-fps_mode", "passthrough", // never duplicate or drop frames
+      "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-profile:v", "high", "-pix_fmt", pixFmt,
+      ...colorArgs(stream),
       "-c:a", "copy",
       // Only the picture and audio streams are mapped, so the drone's telemetry/GPS data track is dropped; also clear
       // container metadata.
@@ -209,6 +219,22 @@ async function renderVideo({ src, logoPath, out, settings, dir }) {
     ],
     { maxBuffer: 10 * 1024 * 1024, timeout: 100 * 60_000 },
   );
+  return { rect, duration };
+}
+
+/**
+ * Compares the result with the original over a short sample, ignoring the logo area. Best effort: a failure here never
+ * fails the job.
+ */
+export async function measureVideoQuality({ src, out, rect, duration }) {
+  try {
+    const seconds = Math.min(12, Math.max(2, Math.floor(duration || 12)));
+    const start = duration > seconds * 3 ? Math.floor(duration / 3) : 0;
+    const { stderr } = await run("ffmpeg", qualityArgs({ src, out, rect, start, seconds }), { maxBuffer: 20 * 1024 * 1024, timeout: 10 * 60_000 });
+    return parseQuality(stderr);
+  } catch {
+    return null;
+  }
 }
 
 /** Strips every metadata block and then proves no GPS tag is left. */
@@ -243,9 +269,12 @@ async function handle(job) {
     await driveDownload(accessToken, job.logoFileId, logoPath);
 
     const out = join(dir, job.kind === "video" ? "out.mp4" : "out.jpg");
+    let quality = null;
     try {
-      if (job.kind === "video") await renderVideo({ src, logoPath, out, settings: job.settings, dir });
-      else await renderPhoto({ src, logoPath, out, settings: job.settings });
+      if (job.kind === "video") {
+        const done = await renderVideo({ src, logoPath, out, settings: job.settings, dir });
+        quality = await measureVideoQuality({ src, out, rect: done.rect, duration: done.duration });
+      } else await renderPhoto({ src, logoPath, out, settings: job.settings });
     } catch (err) {
       throw err instanceof JobError ? err : new JobError("process-failed");
     }
@@ -260,12 +289,19 @@ async function handle(job) {
       mimeType: job.kind === "video" ? "video/mp4" : "image/jpeg",
       parentId: job.outputFolderId,
     });
-    await site("/api/worker/complete", { ok: true, jobId: job.id, wmFileId });
-    console.log(`job ok kind=${job.kind} in=${(job.source.size / 1e6).toFixed(1)}MB out=${(statSync(out).size / 1e6).toFixed(1)}MB seconds=${Math.round((Date.now() - started) / 1000)}`);
+    const seconds = Math.round((Date.now() - started) / 1000);
+    await site("/api/worker/complete", {
+      ok: true,
+      jobId: job.id,
+      wmFileId,
+      seconds,
+      ...(quality?.psnr != null && quality?.ssim != null ? { psnr: quality.psnr, ssim: quality.ssim } : {}),
+    });
+    console.log(`job ok kind=${job.kind} in=${(job.source.size / 1e6).toFixed(1)}MB out=${(statSync(out).size / 1e6).toFixed(1)}MB seconds=${seconds}${quality?.psnr != null ? ` psnr=${quality.psnr.toFixed(1)}dB ssim=${quality.ssim}` : ""}`);
   } catch (err) {
     const code = err instanceof JobError ? err.code : "process-failed";
     console.log(`job failed kind=${job.kind} code=${code}`);
-    await site("/api/worker/complete", { ok: false, jobId: job.id, code: ["download-failed", "too-large", "process-failed", "upload-failed", "gps-leak", "no-logo", "timeout"].includes(code) ? code : "process-failed" }).catch(() => undefined);
+    await site("/api/worker/complete", { ok: false, jobId: job.id, seconds: Math.round((Date.now() - started) / 1000), code: ["download-failed", "too-large", "process-failed", "upload-failed", "gps-leak", "no-logo", "timeout"].includes(code) ? code : "process-failed" }).catch(() => undefined);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
