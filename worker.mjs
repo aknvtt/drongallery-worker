@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import sharp from "sharp";
 import { computeOverlayRect } from "./overlay-math.mjs";
@@ -20,10 +21,6 @@ import { computeOverlayRect } from "./overlay-math.mjs";
 const run = promisify(execFile);
 const SITE = (process.env.GALLERY_SITE_URL ?? "").replace(/\/$/, "");
 const SECRET = process.env.WORKER_HMAC_SECRET ?? "";
-if (!SITE.startsWith("https://") || SECRET.length < 32) {
-  console.error("Missing GALLERY_SITE_URL / WORKER_HMAC_SECRET");
-  process.exit(1);
-}
 
 const CHUNK = 8 * 1024 * 1024; // multiple of 256 KiB, as Drive requires
 const mask = (value) => value && console.log(`::add-mask::${value}`);
@@ -153,7 +150,7 @@ async function prepareLogo(logoPath, rect, opacity) {
   return { data, info };
 }
 
-async function renderPhoto({ src, logoPath, out, settings }) {
+export async function renderPhoto({ src, logoPath, out, settings }) {
   const meta = await sharp(src, { failOn: "none", limitInputPixels: false }).metadata();
   if (!meta.width || !meta.height) throw new JobError("process-failed");
   const swapped = (meta.orientation ?? 1) >= 5;
@@ -274,12 +271,21 @@ async function handle(job) {
   }
 }
 
-let processed = 0;
-for (;;) {
-  const { job } = await site("/api/worker/next", {});
-  if (!job) break;
-  await handle(job);
-  processed++;
+async function main() {
+  if (!SITE.startsWith("https://") || SECRET.length < 32) {
+    console.error("Missing GALLERY_SITE_URL / WORKER_HMAC_SECRET");
+    process.exit(1);
+  }
+  let processed = 0;
+  for (;;) {
+    const { job } = await site("/api/worker/next", {});
+    if (!job) break;
+    await handle(job);
+    processed++;
+  }
+  console.log(`queue empty, jobs handled: ${processed}`);
 }
-console.log(`queue empty, jobs handled: ${processed}`);
+
+// Only run the queue when started directly (tests import renderPhoto without side effects).
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
 
