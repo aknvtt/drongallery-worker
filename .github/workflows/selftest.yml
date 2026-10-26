@@ -36,8 +36,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        noise: [3]
-        crf: [18]
+        noise: [3, 10]
+        crf: [18, 16, 14]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -50,6 +50,5 @@ jobs:
       - run: node selftest.mjs
         env:
           SELFTEST_SOFT: "1"
-          SELFTEST_DIAG: "1"
           SELFTEST_NOISE: ${{ matrix.noise }}
           WORKER_CRF: ${{ matrix.crf }}
