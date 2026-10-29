@@ -14,6 +14,24 @@
 
 ה-Security Manager (yechielalaluf.com/security-manager) יציג את ההתראות אוטומטית ברגע שהן מופעלות, בתנאי שמוגדר הטוקן `GITHUB_ALERTS_TOKEN` בפרויקט my-site ב-Vercel (הוראות בראש `src/lib/githubAlerts.js` בריפו MySite).
 
+<!-- owasp-baseline -->
+## CI: OWASP baseline
+
+נוסף `.github/workflows/owasp-baseline.yml` (2026-10-29). הוא רץ בכל push, ב-pull request, ובכל יום שני בבוקר:
+
+- **Trivy:** תלויות פגיעות (חוסם על HIGH ו-CRITICAL שיש להן תיקון), סודות שנכנסו לקוד, והגדרות לא מאובטחות.
+- **Semgrep:** ניתוח סטטי עם חוקי OWASP Top 10 (חוסם על חומרה ERROR).
+
+ה-Actions נעולים ל-SHA מלא. ממצא שהוא סיכון מקובל נרשם בקובץ `.trivyignore` עם הסבר, ולא מחלישים את ה-workflow.
+
+**מגבלת הסריקה:** הריפו ציבורי.
+
+## הפעלת Dependabot Alerts (אחרי עדכון התלויות)
+
+להפעיל בריפו הזה **אחרי** שמעדכנים את התלויות, כדי שלא יישלחו מיילים על חולשות שכבר ידועות: GitHub ← Settings ← Code security ← Dependabot alerts ← Enable. סוגי התלויות כאן: npm.
+
+ה-Security Manager (yechielalaluf.com/security-manager) יציג את ההתראות אוטומטית ברגע שהן מופעלות, בתנאי שמוגדר הטוקן `GITHUB_ALERTS_TOKEN` בפרויקט my-site ב-Vercel (הוראות בראש `src/lib/githubAlerts.js` בריפו MySite).
+
 ## תיקונים נוספים (להוסיף כאן כשמכינים אותם)
 
 -

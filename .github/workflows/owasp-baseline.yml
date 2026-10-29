@@ -1,0 +1,62 @@
+# OWASP baseline: automated build-pipeline checks aimed at OWASP ASVS Level 3.
+#
+#   Trivy    - known-vulnerable dependencies (ASVS V1.14.6, V14.2.1), secrets committed
+#              to source (V6.4, V14.3) and infrastructure misconfiguration (V14.1).
+#   Semgrep  - static analysis with the OWASP Top 10 ruleset (V5 injection, V1.14 design).
+#
+# Third-party actions are pinned to a full commit SHA (V14.2.4); the tag is in the comment.
+# Blocking on purpose: HIGH/CRITICAL findings fail the run. Findings that are accepted
+# risks belong in .trivyignore (with a reason) instead of loosening this workflow.
+# Same file in every repository; only the EXCLUDES lines below differ per repo.
+name: OWASP baseline
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '17 4 * * 1' # weekly, Monday 04:17 UTC, so new advisories surface without a push
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: owasp-baseline-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  trivy:
+    name: Dependencies, secrets, misconfiguration (Trivy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          hide-progress: true
+          # EXCLUDES (Trivy)
+          skip-dirs: node_modules,.next,.dart_tool,dist
+
+  semgrep:
+    name: Static analysis (Semgrep, OWASP Top 10)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Semgrep
+        run: >-
+          pipx run --spec semgrep==1.182.1 semgrep scan
+          --config p/owasp-top-ten --severity ERROR --error --metrics=off
+          --exclude node_modules --exclude .next --exclude .dart_tool --exclude dist
+          --exclude '*.min.js'
+          .
